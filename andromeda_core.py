@@ -21,7 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 
-#CONFIG & PATH ARCHITECTURE
+# CONFIG & PATH ARCHITECTURE
 
 try: 
     ctypes.windll.user32.SetProcessDPIAware()
@@ -96,3 +96,66 @@ class AndromedaBrain:
             return reply
         except Exception:
             return "Sorry for interrupting, can you please repeat that"
+
+# BLOCK 4:
+
+class AndromedaDriver:
+    def __init__(self):
+        print("[BOOT] Engaging Stealth WebDriver on Port 9011...")
+        self.options = Options()
+        self.options.add_experimental_option("debuggerAddress", f"127.0.0.1:{CHROME_PORT}")
+        
+        try:
+            self.driver = webdriver.Chrome(options=self.options)
+            self.driver.implicitly_wait(2)
+            print("[BOOT] Chrome Link Established. WhatsApp Web Active.")
+        except Exception as e:
+            print(f"[ERROR] Could not connect to Chrome. Is it running with --remote-debugging-port={CHROME_PORT}?")
+            sys.exit(1)
+
+    def human_typing(self, element, text):
+        """Stochastic typing to bypass Meta heuristics."""
+        for char in text:
+            element.send_keys(char)
+            # The Admin Latency: 50ms to 150ms per keystroke
+            time.sleep(random.uniform(0.05, 0.15)) 
+            
+            # 2% chance to make a typo and backspace it
+            if random.random() < 0.02 and char.isalpha():
+                element.send_keys(random.choice(['a', 'e', 's', 't']))
+                time.sleep(random.uniform(0.1, 0.2))
+                element.send_keys(Keys.BACKSPACE)
+                time.sleep(random.uniform(0.1, 0.3))
+
+    def get_unread_messages(self):
+        """Scans the DOM for the unread message badge."""
+        unread_chats = []
+        try:
+            # WhatsApp DOM classes change, but aria-labels usually remain stable
+            unread_badges = self.driver.find_elements(By.XPATH, "//span[contains(@aria-label, 'unread message')]")
+            for badge in unread_badges:
+                # Navigate up the DOM to find the chat container
+                chat_container = badge.find_element(By.XPATH, "../../..")
+                chat_container.click()
+                time.sleep(1) # Wait for chat to load
+                
+                # Extract the last received message
+                messages = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in span.selectable-text")
+                if messages:
+                    last_msg = messages[-1].text
+                    contact_name = self.driver.find_element(By.CSS_SELECTOR, "header span[dir='auto']").text
+                    unread_chats.append({"contact": contact_name, "message": last_msg})
+        except Exception as e:
+            pass # Keep it moving, don't crash on DOM errors
+            
+        return unread_chats
+
+    def send_reply(self, reply_text):
+        """Targets the chatbox and executes human typing."""
+        try:
+            chat_box = self.driver.find_element(By.XPATH, "//div[@title='Type a message']")
+            chat_box.click()
+            self.human_typing(chat_box, reply_text)
+            chat_box.send_keys(Keys.ENTER)
+        except Exception as e:
+            print(f"[SYS_WARNING] Could not locate chat box: {e}")

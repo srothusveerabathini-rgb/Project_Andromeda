@@ -1,7 +1,4 @@
-# ==========================================
-# PROJECT ANDROMEDA: CENTRAL NODE TOOLKIT
-# MISSION: B2B Medical Distribution Suite
-# ==========================================
+# TOOL SUITE:SPECIALISED TOOLS FOR ENTERPRISE TASKS
 import os
 import re
 import json
@@ -14,7 +11,6 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- ENTERPRISE LOGGING SYSTEM ---
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 logging.basicConfig(
@@ -24,7 +20,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# --- AUTO-CORRECTION (SELF-HEALING) DECORATOR ---
 def auto_retry(max_attempts=3, delay=2):
     def decorator(func):
         def wrapper(*args, **kwargs):
