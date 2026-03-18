@@ -69,11 +69,3 @@ class WhatsAppDriver:
         except Exception as e:
             print(f"[SYS_WARNING] Could not locate chat box: {e}")
 
-# --- ISOLATED TESTING BLOCK ---
-# If you run just this file, it will test the browser connection without waking up the LLM.
-if __name__ == "__main__":
-    print("--- TESTING DRIVER IN ISOLATION ---")
-    bot = WhatsAppDriver()
-    print("Checking for unread messages...")
-    unreads = bot.get_unread_messages()
-    print(f"Found {len(unreads)} unread chats: {unreads}")
