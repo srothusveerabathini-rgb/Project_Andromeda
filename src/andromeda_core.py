@@ -1,186 +1,188 @@
-# PROJECT ANDROMEDA
-# BLOCK 1: THE ARSENAL (IMPORTS)
+# PROJECT ANDROMEDA: ORCHESTRATOR NODE
 import os
 import sys
 import time
 import json
-import random
 import re
 import requests
 import logging
-import ctypes
 from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
 
-# IMPORT THE TOOL SUITE (Ensuring relative pathing works)
-try:
-    from src.tools import AndromedaCentralTools
-except ImportError:
-    from tools import AndromedaCentralTools
+# --- CRITICAL PATH FIX ---
+# This ensures that Python can find the 'src' folder even if you run this file directly
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# BLOCK 2: SYSTEM ARCHITECTURE & PATHS
-try: 
-    ctypes.windll.user32.SetProcessDPIAware()
-except Exception: 
-    pass
+from src.driver import AndromedaDriver
+from src.tools import AndromedaCentralTools
 
-SYSTEM_NAME = "ANDROMEDA-01"
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BRAIN_DIR = os.path.join(BASE_DIR, "Brain_Data")
-MEMORY_PATH = os.path.join(BRAIN_DIR, "memory.json")
-KOBOLD_URL = "http://localhost:5001/api/v1/generate"
-CHROME_PORT = "9011"
-
-if not os.path.exists(BRAIN_DIR):
-    os.makedirs(BRAIN_DIR)
-    print(f"[BOOT] Neural Storage initialized at: {BRAIN_DIR}")
-
-# BLOCK 3: THE ReAct NEURAL ENGINE (Reason + Act + Synthesize)
-class AndromedaBrain:
+class AndromedaOrchestrator:
     def __init__(self):
-        self.memory_file = MEMORY_PATH
-        self.session = requests.Session()
+        self.version = "1.0.5-ENTERPRISE"
+        self.memory_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Brain_Data", "memory.json")
+        self.log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logs", "andromeda_node.log")
+        
+        # Ensure log directory exists
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        
+        # Configure logging to write to the file that the UI watches
+        logging.basicConfig(
+            filename=self.log_path,
+            level=logging.INFO,
+            format="%(asctime)s | [%(levelname)s] | %(message)s",
+            datefmt="%H:%M:%S"
+        )
+        
+        self.config = {
+            "llm_url": "http://localhost:5001/api/v1/generate",
+            "chrome_port": "9011",
+            "kill_auth": "NEBULA_2026_X", # Enterprise Authorization Key
+            "polling_interval": 5
+        }
+        
+        # State Tracking
+        self.awaiting_auth = {} # {contact_id: timestamp}
+        self.driver = AndromedaDriver(port=self.config["chrome_port"])
         self.tools = AndromedaCentralTools()
-        self.load_memory()
+        self._boot_sequence()
 
-    def load_memory(self):
-        if os.path.exists(self.memory_file):
-            with open(self.memory_file, 'r') as f:
-                self.memory = json.load(f)
-        else:
-            self.memory = {}
+    def _boot_sequence(self):
+        """Initializes directories and local persistence."""
+        os.makedirs(os.path.dirname(self.memory_path), exist_ok=True)
+        if not os.path.exists(self.memory_path):
+            with open(self.memory_path, 'w') as f: json.dump({}, f)
+        logging.info(f"[BOOT] {self.version} Neural Loop Online.")
+        print(f"[BOOT] {self.version} Orchestrator Active.")
 
-    def save_memory(self):
-        with open(self.memory_file, 'w') as f:
-            json.dump(self.memory, f, indent=4)
-
-    def _llm_call(self, prompt, temp=0.2, max_tokens=150):
-        """Internal helper for local Phi-3.5 communication."""
+    def _llm_gateway(self, prompt, temperature=0.2):
+        """Robust API wrapper for local Phi-3.5 communication."""
         payload = {
             "prompt": prompt,
-            "max_length": max_tokens,
-            "temperature": temp,
+            "max_length": 200,
+            "temperature": temperature,
             "stop_sequence": ["<|end|>", "<|user|>"]
         }
         try:
-            res = self.session.post(KOBOLD_URL, json=payload, timeout=60)
-            return res.json()['results'][0]['text'].strip()
+            response = requests.post(self.config["llm_url"], json=payload, timeout=60)
+            response.raise_for_status()
+            return response.json()['results'][0]['text'].strip()
         except Exception as e:
+            logging.error(f"LLM Gateway Timeout: {e}")
             return None
 
-    def generate_reply(self, contact, message):
-        """Dual-Pass Loop: Decides on tool (Pass 1) -> Executes -> Summarizes (Pass 2)"""
-        
-        # --- PASS 1: REASONING (The Router) ---
-        router_system = (
-            "Output ONLY JSON. Tools: 'dispatch_email', 'verify_business', 'scout_leads', 'manage_schedule', 'chat'. "
-            "Format: {\"tool\": \"name\", \"args\": {}}"
-        )
-        pass1_prompt = f"<|system|>\n{router_system}<|end|>\n<|user|>\n{message}<|end|>\n<|assistant|>\n"
-        
-        raw_json = self._llm_call(pass1_prompt, temp=0.1)
-        
+    def _repair_json(self, raw_string):
+        """Enterprise-grade JSON extraction using regex and quote sanitization."""
         try:
-            json_str = re.search(r'\{.*\}', raw_json, re.DOTALL).group()
-            data = json.loads(json_str)
-            tool_name = data.get("tool", "chat")
-            args = data.get("args", {})
-        except:
-            tool_name = "chat"
-            args = {"text": "re-calibrating logic gates..."}
-
-        # --- ACTION: TOOL EXECUTION ---
-        if tool_name == "verify_business":
-            observation = self.tools.verify_business(args.get("company_name"))
-        elif tool_name == "dispatch_email":
-            observation = self.tools.dispatch_email(args.get("target"), args.get("instruction"))
-        elif tool_name == "scout_leads":
-            observation = self.tools.scout_leads(args.get("niche"))
-        elif tool_name == "manage_schedule":
-            observation = self.tools.manage_schedule(args.get("action"), args.get("detail"), args.get("date_str"))
-        else:
-            observation = args.get("text", "standing by for tasks.")
-
-        # --- PASS 2: SYNTHESIS (Natural Language) ---
-        synthesis_system = (
-            f"You are Andromeda-01. User: '{message}'. Result: '{observation}'. "
-            "Write a professional, 1-sentence WhatsApp reply. lowercase only. under 15 words."
-        )
-        pass2_prompt = f"<|system|>\n{synthesis_system}<|end|>\n<|assistant|>\n"
-        
-        final_msg = self._llm_call(pass2_prompt, temp=0.7) 
-        
-        if not final_msg: final_msg = observation
-
-        if contact not in self.memory: self.memory[contact] = []
-        self.memory[contact].append({"msg": message, "resp": final_msg, "time": str(datetime.now())})
-        self.save_memory()
-
-        return final_msg
-
-# BLOCK 4: F-117 STEALTH DRIVER
-class AndromedaDriver:
-    def __init__(self):
-        self.options = Options()
-        self.options.add_experimental_option("debuggerAddress", f"127.0.0.1:{CHROME_PORT}")
-        
-        try:
-            self.driver = webdriver.Chrome(options=self.options)
-            self.driver.implicitly_wait(2)
-            print("[BOOT] Stealth Driver Online.")
-        except Exception:
-            print(f"[CRITICAL] Chrome instance not found on port {CHROME_PORT}")
-            sys.exit(1)
-
-    def stealth_click(self, element):
-        """Physics-based movement to bypass Meta's anti-bot system."""
-        try:
-            ActionChains(self.driver).move_to_element_with_offset(
-                element, random.randint(-15, 15), random.randint(-10, 10)
-            ).perform()
-            time.sleep(random.uniform(0.05, 0.1))
+            match = re.search(r'\{.*\}', raw_string, re.DOTALL)
+            if not match: return None
             
-            ActionChains(self.driver).move_to_element(element).perform()
-            element.click()
+            clean_json = match.group()
+            # Fix common SLM errors: replace single quotes with double quotes
+            clean_json = clean_json.replace("'", '"')
+            return json.loads(clean_json)
         except Exception:
-            self.driver.execute_script("arguments[0].click();", element)
+            return None
 
-    def human_typing(self, element, text):
-        """Stochastic typing rhythm."""
-        for char in text:
-            element.send_keys(char)
-            time.sleep(random.uniform(0.05, 0.15)) 
-            if random.random() < 0.02 and char.isalpha():
-                element.send_keys(random.choice(['a', 'e', 's', 't']))
-                time.sleep(random.uniform(0.1, 0.2))
-                element.send_keys(Keys.BACKSPACE)
+    def handle_killswitch(self, contact, message):
+        """Implements the Sudo Kill State Machine."""
+        msg_norm = message.strip().lower()
 
-    def get_unread_messages(self):
-        unread_chats = []
-        try:
-            unread_badges = self.driver.find_elements(By.XPATH, "//span[contains(@aria-label, 'unread message')]")
-            for badge in unread_badges:
-                chat_container = badge.find_element(By.XPATH, "../../..")
-                self.stealth_click(chat_container)
-                time.sleep(1.5) 
-                messages = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in span.selectable-text")
-                if messages:
-                    last_msg = messages[-1].text
-                    contact_name = self.driver.find_element(By.CSS_SELECTOR, "header span[dir='auto']").text
-                    unread_chats.append({"contact": contact_name, "message": last_msg})
-        except Exception:
-            pass 
-        return unread_chats
+        # Phase 1: Initiation
+        if msg_norm == "sudo kill":
+            self.awaiting_auth[contact] = time.time()
+            logging.warning(f"Killswitch initiated by {contact}.")
+            return "system termination initiated. enter high-level authorization key:"
 
-    def send_reply(self, reply_text):
-        try:
-            chat_box = self.driver.find_element(By.XPATH, "//div[@title='Type a message']")
-            self.stealth_click(chat_box)
-            self.human_typing(chat_box, reply_text)
-            chat_box.send_keys(Keys.ENTER)
-        except Exception as e:
-            print(f"[ERROR] Chatbox interaction failed: {e}")
+        # Phase 2: Verification
+        if contact in self.awaiting_auth:
+            # Check for timeout (30 seconds to enter password)
+            if time.time() - self.awaiting_auth[contact] > 30:
+                del self.awaiting_auth[contact]
+                logging.info(f"Killswitch timeout for {contact}.")
+                return "authorization timeout. session restored."
+
+            if message.strip() == self.config["kill_auth"]:
+                self.driver.send_reply("identity verified. shutting down all andromeda nodes.")
+                logging.error(f"[CRITICAL] Remote Shutdown executed by {contact}.")
+                print(f"[CRITICAL] Remote Shutdown executed by {contact}.")
+                time.sleep(2)
+                os._exit(0) # Immediate process termination
+            else:
+                del self.awaiting_auth[contact]
+                logging.warning(f"Invalid killswitch auth from {contact}.")
+                return "invalid credentials. lockdown engaged. resuming normal operations."
+        
+        return None
+
+    def process_node(self, contact, message):
+        """The Dual-Pass ReAct Engine."""
+        logging.info(f"[INPUT] Message from {contact}: {message[:30]}...")
+        
+        # 1. Check for Command Overrides (Killswitch)
+        kill_response = self.handle_killswitch(contact, message)
+        if kill_response: return kill_response
+
+        # 2. Pass 1: Logical Routing (Reasoning)
+        router_prompt = (
+            f"<|system|>\nYou are the Andromeda Logic Router. Available tools: "
+            f"dispatch_email, verify_business, scout_leads, manage_schedule, chat. "
+            f"Output ONLY JSON in this format: {{\"tool\": \"name\", \"args\": {{}}}}<|end|>\n"
+            f"<|user|>\n{message}<|end|>\n<|assistant|>\n"
+        )
+        
+        logging.info("[THOUGHT] Pass 1: Determining optimal tool sequence...")
+        raw_output = self._llm_gateway(router_prompt, temperature=0.1)
+        action = self._repair_json(raw_output)
+        
+        tool_name = action.get("tool", "chat") if action else "chat"
+        args = action.get("args", {}) if action else {}
+        logging.info(f"[ACTION] Selected Tool: {tool_name}")
+
+        # 3. Action: Tool Execution
+        if tool_name == "verify_business":
+            observation = self.tools.verify_business(args.get("company_name", ""))
+        elif tool_name == "dispatch_email":
+            observation = self.tools.dispatch_email(args.get("target", ""), args.get("instruction", ""))
+        elif tool_name == "scout_leads":
+            observation = self.tools.scout_leads(args.get("niche", ""))
+        elif tool_name == "manage_schedule":
+            observation = self.tools.manage_schedule(args.get("action", ""), args.get("detail", ""), args.get("date_str"))
+        else:
+            observation = args.get("text", "Logic gate re-calibrated. Standing by.")
+
+        logging.info(f"[OBSERVATION] {observation}")
+
+        # 4. Pass 2: Response Synthesis
+        synth_prompt = (
+            f"<|system|>\nYou are Andromeda-01. Professional Agent. "
+            f"Current Context: User said '{message}'. Tool Result: '{observation}'. "
+            f"Response constraints: lowercase only, max 15 words.<|end|>\n<|assistant|>\n"
+        )
+        
+        logging.info("[THOUGHT] Pass 2: Synthesizing output...")
+        final_response = self._llm_gateway(synth_prompt, temperature=0.7) or observation
+        logging.info(f"[OUTPUT] Synthesized: {final_response}")
+        return final_response
+
+    def run(self):
+        """The Resilient Execution Loop."""
+        while True:
+            try:
+                # Check if driver is still responsive
+                if not hasattr(self.driver, 'driver'):
+                    logging.error("Driver connection lost. Attempting reconnection...")
+                    self.driver = AndromedaDriver(port=self.config["chrome_port"])
+                
+                inbox = self.driver.get_unread_messages()
+                for task in inbox:
+                    response = self.process_node(task['contact'], task['message'])
+                    self.driver.send_reply(response)
+                    
+            except Exception as e:
+                logging.error(f"Critical Runtime Glitch: {e}")
+                time.sleep(10) # Cooling period before retry
+            
+            time.sleep(self.config["polling_interval"])
+
+if __name__ == "__main__":
+    node = AndromedaOrchestrator()
+    node.run()
