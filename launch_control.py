@@ -17,7 +17,7 @@ os.makedirs(BIN_DIR, exist_ok=True)
 KOBOLD_EXE = os.path.join(BIN_DIR, "koboldcpp-nocuda.exe")
 KOBOLD_URL = "https://github.com/LostRuins/koboldcpp/releases/latest/download/koboldcpp-nocuda.exe"
 
-MODEL_FILE = os.path.join(BIN_DIR, "phi-3.5-3.8B-Q_4_K_M.gguf")
+MODEL_FILE = os.path.join(BIN_DIR, "Phi-3.5-mini-instruct-Q4_K_M.gguf")
 MODEL_URL = "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
 
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
