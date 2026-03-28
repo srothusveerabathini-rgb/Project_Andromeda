@@ -1,188 +1,128 @@
-# PROJECT ANDROMEDA: ORCHESTRATOR NODE
-import os
-import sys
-import time
-import json
-import re
-import requests
-import logging
-from datetime import datetime
+import os, sys, time, json, re, requests, logging
 
-# --- CRITICAL PATH FIX ---
-# This ensures that Python can find the 'src' folder even if you run this file directly
+# --- PATHING ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.driver import AndromedaDriver
 from src.tools import AndromedaCentralTools
 
+# --- FAULT TOLERANCE: The Repairer ---
+def auto_retry(max_attempts=3, delay=2):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for i in range(max_attempts):
+                try: return func(*args, **kwargs)
+                except Exception as e:
+                    logging.warning(f"Retrying {func.__name__} due to: {e}")
+                    time.sleep(delay)
+            return "[ERROR] Tool critical failure."
+        return wrapper
+    return decorator
+
 class AndromedaOrchestrator:
     def __init__(self):
-        self.version = "1.0.5-ENTERPRISE"
-        self.memory_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Brain_Data", "memory.json")
-        self.log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logs", "andromeda_node.log")
-        
-        # Ensure log directory exists
-        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
-        
-        # Configure logging to write to the file that the UI watches
-        logging.basicConfig(
-            filename=self.log_path,
-            level=logging.INFO,
-            format="%(asctime)s | [%(levelname)s] | %(message)s",
-            datefmt="%H:%M:%S"
-        )
-        
-        self.config = {
-            "llm_url": "http://localhost:5001/api/v1/generate",
-            "chrome_port": "9011",
-            "kill_auth": "NEBULA_2026_X", # Enterprise Authorization Key
-            "polling_interval": 5
-        }
-        
-        # State Tracking
-        self.awaiting_auth = {} # {contact_id: timestamp}
-        self.driver = AndromedaDriver(port=self.config["chrome_port"])
-        self.tools = AndromedaCentralTools()
-        self._boot_sequence()
-
-    def _boot_sequence(self):
-        """Initializes directories and local persistence."""
-        os.makedirs(os.path.dirname(self.memory_path), exist_ok=True)
-        if not os.path.exists(self.memory_path):
-            with open(self.memory_path, 'w') as f: json.dump({}, f)
-        logging.info(f"[BOOT] {self.version} Neural Loop Online.")
-        print(f"[BOOT] {self.version} Orchestrator Active.")
-
-    def _llm_gateway(self, prompt, temperature=0.2):
-        """Robust API wrapper for local Phi-3.5 communication."""
-        payload = {
-            "prompt": prompt,
-            "max_length": 200,
-            "temperature": temperature,
-            "stop_sequence": ["<|end|>", "<|user|>"]
-        }
-        try:
-            response = requests.post(self.config["llm_url"], json=payload, timeout=60)
-            response.raise_for_status()
-            return response.json()['results'][0]['text'].strip()
-        except Exception as e:
-            logging.error(f"LLM Gateway Timeout: {e}")
-            return None
-
-    def _repair_json(self, raw_string):
-        """Enterprise-grade JSON extraction using regex and quote sanitization."""
-        try:
-            match = re.search(r'\{.*\}', raw_string, re.DOTALL)
-            if not match: return None
+        log_dir = os.path.join(os.path.dirname(__file__), "Logs")
+        os.makedirs(log_dir, exist_ok=True)
             
-            clean_json = match.group()
-            # Fix common SLM errors: replace single quotes with double quotes
-            clean_json = clean_json.replace("'", '"')
-            return json.loads(clean_json)
-        except Exception:
-            return None
-
-    def handle_killswitch(self, contact, message):
-        """Implements the Sudo Kill State Machine."""
-        msg_norm = message.strip().lower()
-
-        # Phase 1: Initiation
-        if msg_norm == "sudo kill":
-            self.awaiting_auth[contact] = time.time()
-            logging.warning(f"Killswitch initiated by {contact}.")
-            return "system termination initiated. enter high-level authorization key:"
-
-        # Phase 2: Verification
-        if contact in self.awaiting_auth:
-            # Check for timeout (30 seconds to enter password)
-            if time.time() - self.awaiting_auth[contact] > 30:
-                del self.awaiting_auth[contact]
-                logging.info(f"Killswitch timeout for {contact}.")
-                return "authorization timeout. session restored."
-
-            if message.strip() == self.config["kill_auth"]:
-                self.driver.send_reply("identity verified. shutting down all andromeda nodes.")
-                logging.error(f"[CRITICAL] Remote Shutdown executed by {contact}.")
-                print(f"[CRITICAL] Remote Shutdown executed by {contact}.")
-                time.sleep(2)
-                os._exit(0) # Immediate process termination
-            else:
-                del self.awaiting_auth[contact]
-                logging.warning(f"Invalid killswitch auth from {contact}.")
-                return "invalid credentials. lockdown engaged. resuming normal operations."
+        self.log_path = os.path.join(log_dir, "andromeda_node.log")
+        logging.basicConfig(filename=self.log_path, level=logging.INFO, format="%(asctime)s | %(message)s")
         
+        self.driver = AndromedaDriver(port="9011")
+        
+        # --- i3 STABILITY PATCH ---
+        try:
+            self.driver.driver.set_page_load_timeout(30)
+            self.driver.driver.set_script_timeout(30)
+        except: pass
+
+        self.tools = AndromedaCentralTools()
+        self.auth_key = "NEBULA_2026_X"
+        self.awaiting_auth = {}
+
+    def _repair_json(self, raw):
+        try:
+            clean = re.sub(r'```json\s*|```', '', raw).strip()
+            match = re.search(r'\{.*\}', clean, re.DOTALL)
+            return json.loads(match.group().replace("'", '"')) if match else None
+        except: return None
+
+    # Apply your auto_retry to all Neural Engine calls!
+    @auto_retry(max_attempts=3, delay=2)
+    def generate_llm_response(self, payload, timeout=45):
+        res = requests.post("http://localhost:5001/api/v1/generate", json=payload, timeout=timeout)
+        return res.json()['results'][0]['text']
+
+    def handle_killswitch(self, contact, msg):
+        if msg.strip().lower() == "sudo kill":
+            self.awaiting_auth[contact] = time.time()
+            return "system termination initiated. enter high-level authorization key:"
+        if contact in self.awaiting_auth:
+            if time.time() - self.awaiting_auth[contact] > 30:
+                del self.awaiting_auth[contact]; return "auth timeout."
+            if msg.strip() == self.auth_key:
+                self.driver.send_reply("[CRITICAL] SHUTTING DOWN."); os._exit(0)
+            del self.awaiting_auth[contact]; return "invalid auth. resuming loop."
         return None
 
-    def process_node(self, contact, message):
-        """The Dual-Pass ReAct Engine."""
-        logging.info(f"[INPUT] Message from {contact}: {message[:30]}...")
-        
-        # 1. Check for Command Overrides (Killswitch)
-        kill_response = self.handle_killswitch(contact, message)
-        if kill_response: return kill_response
+    def process_task(self, contact, msg):
+        logging.info(f"[INPUT] {contact}: {msg}")
+        if kill := self.handle_killswitch(contact, msg): return kill
 
-        # 2. Pass 1: Logical Routing (Reasoning)
-        router_prompt = (
-            f"<|system|>\nYou are the Andromeda Logic Router. Available tools: "
-            f"dispatch_email, verify_business, scout_leads, manage_schedule, chat. "
-            f"Output ONLY JSON in this format: {{\"tool\": \"name\", \"args\": {{}}}}<|end|>\n"
-            f"<|user|>\n{message}<|end|>\n<|assistant|>\n"
-        )
+        # 1. THE ZERO-RAM EXTRACTOR (Bypass the LLM entirely for speed)
+        msg_clean = msg.lower()
+        extracted_company = "NONE"
         
-        logging.info("[THOUGHT] Pass 1: Determining optimal tool sequence...")
-        raw_output = self._llm_gateway(router_prompt, temperature=0.1)
-        action = self._repair_json(raw_output)
-        
-        tool_name = action.get("tool", "chat") if action else "chat"
-        args = action.get("args", {}) if action else {}
-        logging.info(f"[ACTION] Selected Tool: {tool_name}")
-
-        # 3. Action: Tool Execution
-        if tool_name == "verify_business":
-            observation = self.tools.verify_business(args.get("company_name", ""))
-        elif tool_name == "dispatch_email":
-            observation = self.tools.dispatch_email(args.get("target", ""), args.get("instruction", ""))
-        elif tool_name == "scout_leads":
-            observation = self.tools.scout_leads(args.get("niche", ""))
-        elif tool_name == "manage_schedule":
-            observation = self.tools.manage_schedule(args.get("action", ""), args.get("detail", ""), args.get("date_str"))
+        # Instantly slice the text without using AI
+        if "gstin of" in msg_clean:
+            extracted_company = msg_clean.split("gstin of ")[-1].strip()
+            print(f"[REASONING] Zero-RAM Bypass. Target Entity: {extracted_company}")
+            obs = self.tools.verify_business(extracted_company)
+            
+        elif "scout" in msg_clean or "leads" in msg_clean:
+            extracted_company = msg_clean.split("for ")[-1].strip() if "for " in msg_clean else "steel"
+            obs = self.tools.scout_leads(extracted_company)
+            
+        elif "email" in msg_clean or "dispatch" in msg_clean:
+            obs = self.tools.dispatch_email("manager", msg)
+            
         else:
-            observation = args.get("text", "Logic gate re-calibrated. Standing by.")
+            obs = "Logic calibrated. Andromeda is standing by for instructions."
 
-        logging.info(f"[OBSERVATION] {observation}")
+        # 2. SYNTHESIS: Final Professional Reply
+        try:
+            synth = f"<|system|>max 15 words. Be professional.<|end|>\n<|user|>Action result: {obs}<|end|>\n<|assistant|>"
+            payload_synth = {"prompt": synth, "max_length": 40, "stop_sequence": ["<|end|>"], "temperature": 0.3}
+            final = self.generate_llm_response(payload_synth, timeout=40)
+            if final == "[ERROR] Tool critical failure.": return obs.lower()[:100]
+            return final.strip().lower()
+        except: 
+            return obs.lower()[:100]
 
-        # 4. Pass 2: Response Synthesis
-        synth_prompt = (
-            f"<|system|>\nYou are Andromeda-01. Professional Agent. "
-            f"Current Context: User said '{message}'. Tool Result: '{observation}'. "
-            f"Response constraints: lowercase only, max 15 words.<|end|>\n<|assistant|>\n"
-        )
-        
-        logging.info("[THOUGHT] Pass 2: Synthesizing output...")
-        final_response = self._llm_gateway(synth_prompt, temperature=0.7) or observation
-        logging.info(f"[OUTPUT] Synthesized: {final_response}")
-        return final_response
-
-    def run(self):
-        """The Resilient Execution Loop."""
+    def main_loop(self):
+        logging.info("[SUCCESS] ANDROMEDA SYSTEM ONLINE.")
+        print("[ACTIVE] Monitoring WhatsApp on Port 9011...")
         while True:
             try:
-                # Check if driver is still responsive
-                if not hasattr(self.driver, 'driver'):
-                    logging.error("Driver connection lost. Attempting reconnection...")
-                    self.driver = AndromedaDriver(port=self.config["chrome_port"])
+                unread = self.driver.get_unread_messages()
+                for t in unread:
+                    reply = self.process_task(t['contact'], t['message'])
+                    self.driver.send_reply(reply)
+            except Exception as e: 
+                err_msg = str(e).lower()
+                logging.error(f"Runtime Glitch: {err_msg}")
                 
-                inbox = self.driver.get_unread_messages()
-                for task in inbox:
-                    response = self.process_node(task['contact'], task['message'])
-                    self.driver.send_reply(response)
-                    
-            except Exception as e:
-                logging.error(f"Critical Runtime Glitch: {e}")
-                time.sleep(10) # Cooling period before retry
-            
-            time.sleep(self.config["polling_interval"])
+                # --- ENTERPRISE AUTO-REVIVE ---
+                if "invalid session id" in err_msg or "disconnected" in err_msg or "closed" in err_msg:
+                    print("\n[CRITICAL] WhatsApp Connection Severed. Auto-Reviving Session...")
+                    try:
+                        self.driver = AndromedaDriver(port="9011")
+                        self.driver.driver.set_page_load_timeout(30)
+                        print("[SUCCESS] Session Restored. Resuming Operations.\n")
+                    except Exception as revive_e:
+                        print(f"[FATAL] Could not revive session: {revive_e}")
+                        time.sleep(10) # Prevent rapid crash looping
+            time.sleep(5)
 
 if __name__ == "__main__":
-    node = AndromedaOrchestrator()
-    node.run()
+    try: AndromedaOrchestrator().main_loop()
+    except KeyboardInterrupt: print("\n[SYSTEM] Powering down.")

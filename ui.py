@@ -1,109 +1,71 @@
-import pygame
-import os
-import ctypes
+import pygame, psutil, os, sys
 
-# --- SYSTEM PATHS ---
-# Calculates paths relative to where ui.py is located (the root folder)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE_DIR, "src", "Logs", "andromeda_node.log")
+WIDTH, HEIGHT = 1200, 800
 
-# --- UI SETTINGS ---
-WIDTH, HEIGHT = 450, 600  # Widget size
-CYAN = (0, 255, 255)
-BLACK = (0, 0, 0)
-DARK_CYAN = (0, 100, 100)
+BG_COLOR, PANEL_BG, BORDER_COLOR = (10, 10, 15), (20, 20, 25), (40, 40, 50)
+NEON_GREEN, CYAN, RED = (57, 255, 20), (0, 255, 255), (255, 50, 50)
 
-# --- PIN TO TOP RIGHT ---
-try:
-    # Get screen resolution via Windows API
-    user32 = ctypes.windll.user32
-    screen_width = user32.GetSystemMetrics(0)
-    # Calculate position (Screen Width - UI Width - 20px padding from the right edge)
-    os.environ['SDL_VIDEO_WINDOW_POS'] = f"{screen_width - WIDTH - 20},20"
-except Exception:
-    pass # Fallback if not running on Windows
-
-pygame.init()
-
-# --- FRAMELESS & ALWAYS ON TOP ---
-# pygame.NOFRAME removes the standard close/minimize/maximize borders
-screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
-pygame.display.set_caption("ANDROMEDA_OS")
-
-try:
-    # Windows API trick to force the window to stay ALWAYS ON TOP of other apps
-    hwnd = pygame.display.get_wm_info()["window"]
-    ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
-except Exception:
-    pass
-
-# --- FONTS ---
-font_title = pygame.font.SysFont("Consolas", 24, bold=True)
-font_text = pygame.font.SysFont("Consolas", 14)
-
-def get_thinking_logs(limit=16):
-    """Tails the log file to show what the ReAct engine is doing."""
-    if not os.path.exists(LOG_PATH):
-        return ["AWAITING NEURAL LINK..."]
+def get_latest_logs(filepath, max_lines=32):
+    if not os.path.exists(filepath): return ["[SYS] Awaiting Log Stream..."]
     try:
-        with open(LOG_PATH, 'r') as f:
-            lines = f.readlines()
-            # Clean up the logs and truncate them so they don't run off the screen
-            return [line.strip()[-55:] for line in lines[-limit:]]
-    except Exception:
-        return ["LOG SYNC ERROR"]
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            return [line.strip() for line in f.readlines()[-max_lines:]]
+    except: return ["[GUI ERROR] IO Collision - Retrying..."]
 
-def draw_ui(frame_count):
-    screen.fill(BLACK)
+def draw_graph(surface, font, data, x, y, w, h, color, title):
+    pygame.draw.rect(surface, PANEL_BG, (x, y, w, h))
+    pygame.draw.rect(surface, BORDER_COLOR, (x, y, w, h), 2)
     
-    # 1. BORDER
-    pygame.draw.rect(screen, CYAN, (0, 0, WIDTH, HEIGHT), 2)
+    current_val = data[-1]
+    text_color = RED if current_val > 85 else color
+    surface.blit(font.render(f"{title}: {current_val:.1f}%", True, text_color), (x + 15, y + 15))
     
-    # 2. HEADER
-    title = font_title.render("ANDROMEDA_OS", True, CYAN)
-    screen.blit(title, (20, 20))
-    pygame.draw.line(screen, CYAN, (20, 50), (WIDTH - 20, 50), 1)
-
-    # 3. LIVE LOG FEED (MIDDLE)
-    logs = get_thinking_logs()
-    y_offset = 70
-    for log in logs:
-        log_render = font_text.render(f"> {log}", True, CYAN)
-        screen.blit(log_render, (20, y_offset))
-        y_offset += 25
-
-    # 4. ANIMATED "THINKING" STATUS (BOTTOM)
-    # Uses the frame count to cycle through characters, creating a spinning animation
-    spinner = ["|", "/", "-", "\\"][int((frame_count / 10) % 4)]
-    status_text = f"NEURAL CORE: THINKING [{spinner}]"
-    
-    status_render = font_text.render(status_text, True, CYAN)
-    screen.blit(status_render, (20, HEIGHT - 40))
-    pygame.draw.line(screen, DARK_CYAN, (20, HEIGHT - 50), (WIDTH - 20, HEIGHT - 50), 1)
-
-    pygame.display.flip()
-
-def run_os():
-    clock = pygame.time.Clock()
-    running = True
-    frame_count = 0
-
-    while running:
-        # Allow exiting by pressing ESCAPE (since there is no "X" button anymore)
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-
-        draw_ui(frame_count)
-        frame_count += 1
+    points = []
+    step_x = w / len(data)
+    plot_h = h - 50 
+    for i, val in enumerate(data):
+        points.append((x + (i * step_x), (y + h - 10) - ((val / 100) * plot_h)))
         
-        # Lock to 30 FPS. High enough to look smooth, low enough to not steal CPU from the LLM.
-        clock.tick(30) 
+    if len(points) > 1:
+        pygame.draw.line(surface, BORDER_COLOR, (x, y + h - 10 - (0.5 * plot_h)), (x + w, y + h - 10 - (0.5 * plot_h)), 1)
+        pygame.draw.lines(surface, color, False, points, 2)
 
-    pygame.quit()
+def main():
+    pygame.init(); screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("ANDROMEDA TACTICAL C2")
+    font_main = pygame.font.SysFont("consolas", 14)
+    font_title = pygame.font.SysFont("consolas", 20, bold=True)
+    clock = pygame.time.Clock()
 
-if __name__ == "__main__":
-    run_os()s
+    cpu_history, ram_history = [0] * 100, [0] * 100
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                pygame.quit(); sys.exit()
+
+        cpu_history.pop(0); cpu_history.append(psutil.cpu_percent())
+        ram_history.pop(0); ram_history.append(psutil.virtual_memory().percent)
+
+        screen.fill(BG_COLOR)
+
+        log_pane_w = int(WIDTH * 0.65)
+        pygame.draw.rect(screen, PANEL_BG, (20, 20, log_pane_w, HEIGHT - 40))
+        pygame.draw.rect(screen, BORDER_COLOR, (20, 20, log_pane_w, HEIGHT - 40), 2)
+        
+        screen.blit(font_title.render("=== ANDROMEDA NODE TELEMETRY | UID: A-01 ===", True, NEON_GREEN), (35, 35))
+        pygame.draw.line(screen, NEON_GREEN, (35, 60), (log_pane_w, 60), 1)
+
+        for i, log in enumerate(get_latest_logs(LOG_PATH, (HEIGHT - 100) // 22)):
+            color = RED if "[ERROR]" in log else NEON_GREEN if "[SUCCESS]" in log else CYAN
+            screen.blit(font_main.render(log, True, color), (35, 75 + (i * 22)))
+
+        gx, gw, gh = log_pane_w + 40, WIDTH - (log_pane_w + 40) - 20, (HEIGHT // 2) - 30
+        draw_graph(screen, font_title, cpu_history, gx, 20, gw, gh, NEON_GREEN, "SYSTEM CPU")
+        draw_graph(screen, font_title, ram_history, gx, (HEIGHT // 2) + 10, gw, gh, CYAN, "MEMORY ALLOC")
+
+        pygame.display.flip(); clock.tick(15)
+
+if __name__ == "__main__": main()
